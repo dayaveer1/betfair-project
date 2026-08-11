@@ -39,6 +39,8 @@ class Quote(NamedTuple):
 
     bid: float
     ask: float
+    bidSize: float
+    askSize: float
 
 class ArbDetect:
     """Builds a state-space of scorelines and searches it for static arbitrage.
@@ -102,7 +104,7 @@ class ArbDetect:
         for market in givenMarkets:
             self.add_market(*market)
 
-    def build_market(self, quotes):
+    def build_market(self):
         """Build the payoff matrix and name index if needed.
 
         """
@@ -118,7 +120,7 @@ class ArbDetect:
         if "cash" not in self._marketNames:
             self.add_market("cash", lambda h,a: True)
         if "cash" not in quotes:
-            quotes = {**quotes, "cash": Quote( bid=1.00, ask=1.00 )}
+            quotes = {**quotes, "cash": Quote( bid=1.00, ask=1.00, bidSize=1.00, askSize=1.00 )}
         return quotes
 
 
@@ -140,7 +142,7 @@ class ArbDetect:
         """
 
         quotes = self.inject_cash(quotes)
-        self.build_market(quotes)
+        self.build_market()
 
         # Restrict the payoff matrix and price vectors to the quoted markets,
         # keeping all three in the same order so their indices line up.
@@ -148,8 +150,10 @@ class ArbDetect:
         A = self._markMat[[self._index[n] for n in names]]
         piBid = np.array([quotes[n].bid for n in names])
         piAsk = np.array([quotes[n].ask for n in names])
+        bidSize = np.array([quotes[n].bidSize for n in names])
+        askSize = np.array([quotes[n].askSize for n in names])
 
-        port = self.find_arbitragePort(piBid, piAsk, A)
+        port = self.find_arbitragePort(piBid, piAsk, bidSize, askSize, A)
 
         cashFlow = self.cash_flow(port, piBid, piAsk)
         payoff = self.payoff(port, A)
@@ -172,7 +176,7 @@ class ArbDetect:
         return result
 
 
-    def find_arbitragePort(self, piBid, piAsk, A):
+    def find_arbitragePort(self, piBid, piAsk, bidSize, askSize, A):
         """Find a risk-less profit portfolio.
 
         Solves a linear program over separate buy and sell legs, since the two
@@ -185,6 +189,8 @@ class ArbDetect:
         Args:
             piBid: Vector of prices received when selling each security.
             piAsk: Vector of prices paid when buying each security.
+            bidSize: liquidity of each security to sell
+            askSize: liquidity of each security to buy
             A: Matrix of the payout of each security (row) in each state (column).
 
         Returns:
@@ -196,13 +202,14 @@ class ArbDetect:
         """
 
         m = A.shape[0]
+        n = A.shape[1]
         maximum = linprog(
             # Decision vector is [buy weights, sell weights], hence the doubled width.
             c = np.concatenate((piAsk, -piBid)),
             A_ub = np.concatenate((-A.T, A.T), axis=1),
-            b_ub = np.zeros(A.shape[1]),
-            # Unit cap per leg keeps the LP bounded to stop "infinite profit"
-            bounds = [(0,1)]*(2*m)
+            b_ub = np.zeros(n),
+            # Cap each leg to be positive and below maximum liquidity
+            bounds = np.column_stack(( np.zeros(2*m), np.concatenate((askSize, bidSize)) ))
         )
         if maximum.success:
             x = maximum.x
@@ -280,10 +287,10 @@ if __name__ == "__main__":
 
     # Only the quoted markets are tradable in the search below.
     quotes = {
-        "draw":      Quote( bid=0.29, ask=0.30 ),
-        "over 2.5":  Quote( bid=0.33, ask=0.34 ),
-        "BTTS no":   Quote( bid=0.31, ask=0.32 ),
-        "cash":      Quote( bid=1.00, ask=1.00 )
+        "draw":      Quote( bid=0.29, ask=0.30, bidSize=0.7, askSize=0.5 ),
+        "over 2.5":  Quote( bid=0.33, ask=0.34, bidSize=0.2, askSize=0.1 ),
+        "BTTS no":   Quote( bid=0.31, ask=0.32, bidSize=0.8, askSize=1.1 ),
+        "cash":      Quote( bid=1.00, ask=1.00, bidSize=1, askSize=1 )
     }
 
     result = detector.find(quotes)
