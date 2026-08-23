@@ -60,13 +60,14 @@ class ArbDetect:
         """
 
         self.max_goals = max_goals
-        self.nStates = max_goals + 1  #number of states per side
+        self.nStates = max_goals + 1  # number of states per side
         self.markets = []             # registered (name, predicate) pairs, in order added
         self._rows = []               # payoff row per market, used to build markMat
         self._markMat = None          # cached payoff matrix; None means "needs rebuilding"
         self._index = {}              # market name: row position in self._markMat
         self._tol = 10**-6            # floating point arithmetic tolerance
         self._marketNames = set()     # rejects duplicate names
+        self._lastRes = None          # stores the optimised object achieved
 
     def add_market(self, name, predicate):
         """Register a market and its payoff in every scoreline.
@@ -132,7 +133,7 @@ class ArbDetect:
                 quoted markets take part in the search.
 
         Returns:
-            A dict with keys ``status``, ``found``, ``portfolio``, ``cash_flow``
+            A dict with keys ``found``, ``portfolio``, ``cash_flow``
             and ``payoff``, of the form of :class:`ArbResult`. ``portfolio`` maps 
             each quoted market name to its signed weight.
 
@@ -211,6 +212,7 @@ class ArbDetect:
             # Cap each leg to be positive and below maximum liquidity
             bounds = np.column_stack(( np.zeros(2*m), np.concatenate((askSize, bidSize)) ))
         )
+        self._lastRes = maximum
         if maximum.success:
             x = maximum.x
             # Net the two legs back into one signed position per security.
@@ -255,3 +257,32 @@ class ArbDetect:
         """
 
         return np.dot(port, A)
+
+    def state_prices(self):
+        """Recover Arrow-Debreu state prices from the dual of the last search.
+
+        The multipliers on the payoff constraints form a non-negative measure over
+        scorelines that prices every quoted market within its own bid-ask spread.
+        The injected cash security, paying 1 in every state at a price of 1.00,
+        forces that measure to sum to one, so it may be read as a market-implied
+        probability distribution over scorelines.
+
+        The measure is generally not unique: when few markets are quoted relative
+        to the number of states, many measures are consistent with the quotes and
+        the solver returns one vertex of that set.
+
+        However this only holds value when the search found no arbitrage. If one
+        was found, no measure consistent with every quote exists; the solver still
+        returns a distribution, but holds no value.
+
+        Returns:
+            Array of shape (nStates, nStates), indexed by (home goals, away goals),
+            non-negative and summing to one.
+
+        Raises:
+            RuntimeError: If called before :meth:`find`.
+        """
+
+        if self._lastRes is None or not self._lastRes.success:
+            raise RuntimeError("call find() successfully before state_prices()")
+        return (-self._lastRes.ineqlin.marginals).reshape(self.nStates, self.nStates)
