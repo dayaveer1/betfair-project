@@ -20,17 +20,28 @@ markets = [
     ( "cash",               lambda h,a: True              )
 ]
 
-# Demonstration: a 0-20 goal grid (441 scorelines).
+# Demonstration: a 0-20 goal grid (441 scorelines)
 detector = ArbDetect(20)
 detector.add_market_multiple(markets)
 
 # Only the quoted markets are tradable in the search below.
 quotes = {
-        "draw":      Quote( bid=0.29, ask=0.30 ),
-        "over 2.5":  Quote( bid=0.33, ask=0.34 ),
-        "BTTS no":   Quote( bid=0.31, ask=0.32 ),
-        "cash":      Quote( bid=1.00, ask=1.00 )
-    }
+        "over 1.5":  Quote( bid=0.58, ask=0.62, bidSize=300,  askSize=250  ),
+        "over 2.5":  Quote( bid=0.60, ask=0.64, bidSize=400,  askSize=350  ),
+        "cash":      Quote( bid=1.00, ask=1.00, bidSize=1000, askSize=1000 )
+}
 
 result = detector.find(quotes)
+print(f"Arbitrage found: {result.found}")
 print(result.portfolio)
+print(f"Cash flow: {result.cash_flow}")
+
+# Test the midpoints for inaccessable arbitrage
+mid = lambda q: (q.bid + q.ask)/2
+
+mids = {
+    n: Quote( bid=mid(q), ask=mid(q) ) for n,q in quotes.items()
+}
+midRes = detector.find(mids)
+print(f"Arbitrage found: {midRes.found}")
+print(midRes.portfolio)
