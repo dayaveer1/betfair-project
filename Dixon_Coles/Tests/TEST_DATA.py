@@ -1,12 +1,11 @@
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from typing import NamedTuple
 import numpy as np
 from scipy.stats import poisson
-
-class Match(NamedTuple):
-    home: str
-    away: str
-    score: tuple[int, int]
-    ts: int
+from dixon_coles import Match
 
 TRUE_PARAMS = {
     "homeAdv": 0.30,
@@ -66,4 +65,4 @@ def get_test_data(seed=0, nSeasons=1):
 
                     match = Match(home, away, score, 0)
                     matches.append(match)
-    return TRUE_PARAMS["teams"].keys(), matches
+    return list(TRUE_PARAMS["teams"].keys()), matches

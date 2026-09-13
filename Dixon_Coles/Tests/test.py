@@ -5,7 +5,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from dixon_coles import DixonColes
 from TEST_DATA import get_test_data, TRUE_PARAMS
 
-teams, matches = get_test_data(seed=42,nSeasons=40)
+teams, matches = get_test_data(seed=42,nSeasons=100)
 
 dc = DixonColes(teams)
 dc.fit_from_matches(matches)
