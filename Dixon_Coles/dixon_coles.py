@@ -1,12 +1,15 @@
 from typing import NamedTuple
 from scipy.optimize import minimize
 import numpy as np
+from collections import defaultdict
+from itertools import chain
 
 class Match(NamedTuple):
     home: str
     away: str
     score: tuple[int, int]
-    ts: int
+    season: int
+    ts: np.datetime64
 
 class MatchData(NamedTuple):
     home_idx:   np.ndarray
@@ -28,33 +31,139 @@ class DixonColes():
         self.defences = None
         self.homeAdv = None
         self.lowScoreCorr = None
+        self.timeDecay = None
 
         self.maxGoals = 10
         self.scorelineDist = None
 
-    def fit_from_matches(self,matches):
 
+    def fit_from_matches(self, allMatches):
+
+        quarters = self._split_by_quarters(allMatches)
+        folds = self.create_test_train(quarters)
+
+        timeDecays = np.linspace(0.000, 0.01, 11)
+        self.timeDecay = self.select_decay(timeDecays, folds)
+                
+        max_ts = max(m.ts for m in allMatches)
+        allMatchData = self._build_match_data(allMatches, max_ts, self.timeDecay)
+        paramData = self.fit(allMatchData)
+
+        if paramData is None:
+            raise Exception("Failed to fit full match data")
+        params = self._unpack( paramData )
+
+        (self.attacks, self.defences, self.homeAdv, self.lowScoreCorr) = params
+
+
+    # Split matches into an ordered list of quarters: [s0q0, s0q1, s0q2, s0q3, s1q0, ...]
+    def _split_by_quarters(self, matches):
+
+        # group matches by season
+        by_season = defaultdict(list)
+        for m in matches:
+            by_season[m.season].append(m)
+
+        season_nums = sorted(by_season)
+        season_matches = [ sorted(by_season[s], key=lambda m: m.ts) for s in season_nums ]
+
+        # cut each season into 4 blocks of (roughly) equal match count
+        quarters = []
+        for season in season_matches:
+            bounds = np.linspace(0, len(season), 5).round().astype(int)
+            for start, end in zip(bounds[:-1], bounds[1:]):
+                quarters.append(season[start:end])
+
+        return quarters
+
+
+    def create_test_train(self, quarters):
+        n_quarters = len(quarters)
+        folds = []
+
+        #Set up train/test split for each cutoff
+        for season_cutoff in range(1, n_quarters):
+            train_matches = list(chain.from_iterable(quarters[:season_cutoff]))
+            test_matches = quarters[season_cutoff]
+
+            fold = (train_matches, test_matches)
+            folds.append(fold)
+
+        return folds
+
+    def select_decay(self, timeDecays, folds):
+        scores = [] # score for each time decay
+
+        for decay in timeDecays:
+            x0 = None
+            score = 0
+            for train, test in folds:
+                #Set time
+                ref_ts = min( tm.ts for tm in test )
+
+                #Train
+                trainMatchData = self._build_match_data(train, ref_ts, decay)
+                xRes = self.fit(trainMatchData, x0)
+
+                if xRes is None:
+                    score = float("-inf")
+                    break
+
+                x0 = xRes
+                params = self._unpack(xRes)
+
+                #test
+                testMatchData = self._build_match_data(test)
+                li, success = self.likelihood(*params, testMatchData)
+
+                #Ensure decay produces valid D-C correction for all folds
+                if not success:
+                    score = float("-inf")
+                    break
+
+                score += li
+            scores.append(score)
+
+        assert not all(score == float("-inf") for score in scores)
+        
+        idx = scores.index(max(scores))
+        bestTimeDecay = timeDecays[idx]
+        return bestTimeDecay
+
+        
+
+    def _build_match_data(self, matches, ref_ts=None, decay = None):
         home_goals = np.array([ m.score[0] for m in matches ])
         away_goals = np.array([ m.score[1] for m in matches ])
+
+        if decay is None:
+            weights = np.ones(len(matches))            
+        else:
+            ts = np.array([ m.ts for m in matches ])
+            t_delta = (ref_ts - ts) / np.timedelta64(1, 'D')
+            weights = np.exp( -t_delta * decay )
 
         matchData = MatchData(
             home_idx   = np.array([ self.idx[m.home] for m in matches ]),
             away_idx   = np.array([ self.idx[m.away] for m in matches ]),
             home_goals = home_goals,
             away_goals = away_goals,
-            weights    = np.ones(len(matches)), #TODO set weights
+            weights    = weights,
             nMatches   = len(matches),
             m00 = (home_goals == 0) & (away_goals == 0),
             m01 = (home_goals == 0) & (away_goals == 1),
             m10 = (home_goals == 1) & (away_goals == 0),
             m11 = (home_goals == 1) & (away_goals == 1)
         )
+        return matchData
 
-        self.fit(matchData)
 
-    def fit(self, matchData):
+    def fit(self, matchData, x0 = None):
         n = len(self.teams)
-        x0 = np.concatenate([np.zeros(2*n-1), [0.3], [0.0]])
+
+        if x0 is None:
+            x0 = np.concatenate([np.zeros(2*n-1), [0.3], [0.0]])
+
         bounds = [(None, None)] * (2*n) + [(-0.2, 0.2)]
         result = minimize(
             self._objective,
@@ -63,9 +172,10 @@ class DixonColes():
             bounds = bounds
         )
 
-        self.attacks, self.defences, self.homeAdv, self.lowScoreCorr = self._unpack(result.x)
         if not result.success:
-            raise Exception("Failed to fit model")
+            return None
+        
+        return result.x
 
     def _unpack(self, v):
         n = len(self.teams)
@@ -74,13 +184,11 @@ class DixonColes():
         defences = v[n-1 : 2*n-1]
         homeAdv = v[2*n-1]
         lowScoreCorr = v[2*n]
-        return attacks, defences, homeAdv, lowScoreCorr
+        return (attacks, defences, homeAdv, lowScoreCorr)
 
     def _objective(self, v, matchData):
         attacks, defences, homeAdv, lowScoreCorr = self._unpack(v)
-        li = self.likelihood(attacks, defences, homeAdv, lowScoreCorr, matchData)
-        if li is None:
-            return 1e10
+        li, success = self.likelihood(attacks, defences, homeAdv, lowScoreCorr, matchData)
         return -li
 
     def likelihood(self, attacks, defences, homeAdv, lowScoreCorr, md):
@@ -101,10 +209,16 @@ class DixonColes():
         DCCorrection[md.m10] = 1 + awayExpGoals[md.m10] * lowScoreCorr
         DCCorrection[md.m11] = 1 - lowScoreCorr
 
-        if np.any(DCCorrection <= 0):
-            return None
+        PEN_SCALAR = -100
+        FLOOR = 1e-6
+
+        violation = np.clip(FLOOR - DCCorrection, 0.0, None)
+        success = not np.any(violation > 0)
+        DCCorrection = np.maximum(DCCorrection, FLOOR)
+        penalty = PEN_SCALAR * violation.sum()
 
         unweighted =  np.log(DCCorrection)  -homeExpGoals + md.home_goals * homeExpGoalsLog  -awayExpGoals + md.away_goals * awayExpGoalsLog
-        likelihood = np.dot( md.weights, unweighted )
+        likelihood = np.dot( md.weights, unweighted ) + penalty
+        
 
-        return likelihood    
+        return likelihood, success

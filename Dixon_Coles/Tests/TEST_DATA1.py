@@ -36,7 +36,7 @@ TRUE_PARAMS = {
 }
 
 
-def get_test_data(seed=0, nSeasons=1):
+def get_test_data(seed=0, nSeasons=1, firstSeasonYear=2020, seasonLengthDays=280):
     rng = np.random.default_rng(seed)
 
     matches = []
@@ -63,6 +63,12 @@ def get_test_data(seed=0, nSeasons=1):
                     k = rng.choice(len(flat), p=flat)
                     score = divmod(k, 11)
 
-                    match = Match(home, away, score, 0)
+                    # Each season kicks off on 1st August and runs for seasonLengthDays
+                    seasonStart = np.datetime64(f"{firstSeasonYear + season}-08-01", 'D')
+                    ts = seasonStart + np.timedelta64(int(rng.integers(seasonLengthDays)), 'D')
+
+                    match = Match(home, away, score, season, ts)
                     matches.append(match)
+
+    matches.sort(key=lambda m: m.ts)
     return list(TRUE_PARAMS["teams"].keys()), matches
