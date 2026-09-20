@@ -1,0 +1,5 @@
+class Match(NamedTuple):
+    home: str
+    away: str
+    score: tuple[int, int]
+    ts: np.datetime64
