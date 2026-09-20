@@ -18,6 +18,9 @@ class MatchData(NamedTuple):
     away_goals: np.ndarray
     weights:    np.ndarray
     nMatches:   int
+    teams:      list[str]
+    nTeams:     int
+    idx:        dict[str, int]
     m00:        np.ndarray
     m01:        np.ndarray
     m10:        np.ndarray
@@ -51,7 +54,12 @@ class DixonColes():
 
         if paramData is None:
             raise Exception("Failed to fit full match data")
-        params = self._unpack( paramData )
+        params = self._unpack( paramData, allMatchData.nTeams )
+
+        # Parameters are indexed against the teams present in the fitted data,
+        # which may be a subset of the teams passed to the constructor
+        self.teams = allMatchData.teams
+        self.idx = allMatchData.idx
 
         (self.attacks, self.defences, self.homeAdv, self.lowScoreCorr) = params
 
@@ -94,7 +102,9 @@ class DixonColes():
     def select_decay(self, timeDecays, folds):
         scores = [] # score for each time decay
 
+
         for decay in timeDecays:
+            oldMD = None
             x0 = None
             score = 0
             for train, test in folds:
@@ -103,6 +113,8 @@ class DixonColes():
 
                 #Train
                 trainMatchData = self._build_match_data(train, ref_ts, decay)
+                if not x0 is None:
+                    x0 = self._remap(x0, oldMD, trainMatchData)
                 xRes = self.fit(trainMatchData, x0)
 
                 if xRes is None:
@@ -110,10 +122,10 @@ class DixonColes():
                     break
 
                 x0 = xRes
-                params = self._unpack(xRes)
+                params = self._unpack(xRes, trainMatchData.nTeams)
 
                 #test
-                testMatchData = self._build_match_data(test)
+                testMatchData = self._build_match_data(test, teams=trainMatchData.teams)
                 li, success = self.likelihood(*params, testMatchData)
 
                 #Ensure decay produces valid D-C correction for all folds
@@ -121,6 +133,7 @@ class DixonColes():
                     score = float("-inf")
                     break
 
+                oldMD = trainMatchData
                 score += li
             scores.append(score)
 
@@ -130,9 +143,34 @@ class DixonColes():
         bestTimeDecay = timeDecays[idx]
         return bestTimeDecay
 
-        
+    def _remap(self, xOld, oldMD, newMD):
+        n_old, n_new = oldMD.nTeams, newMD.nTeams
+        attOld, defOld, homeAdv, lowScoreCorr = self._unpack(xOld, n_old)
 
-    def _build_match_data(self, matches, ref_ts=None, decay = None):
+        att = np.zeros(n_new)
+        dfc = np.zeros(n_new)
+        for t, i_new in newMD.idx.items():
+            i_old = oldMD.idx.get(t)
+            if i_old is not None:
+                att[i_new] = attOld[i_old]
+                dfc[i_new] = defOld[i_old]
+
+        att -= att.mean()                      # re-impose sum-to-zero on the new team set
+        return np.concatenate([att[:-1], dfc, [homeAdv], [lowScoreCorr]])
+
+
+    def _build_match_data(self, matches, ref_ts=None, decay = None, teams=None):
+        # Form teams from match data if needed
+        if teams is None:
+            teams = sorted({m.home for m in matches} | {m.away for m in matches})
+        nTeams = len(teams)
+
+        idx = {t: i for i, t in enumerate(teams)}
+
+        # Only use matches which include valid teams
+        # Filters any teams which we don't have parameters for
+        matches = [m for m in matches if m.home in idx and m.away in idx]
+
         home_goals = np.array([ m.score[0] for m in matches ])
         away_goals = np.array([ m.score[1] for m in matches ])
 
@@ -144,12 +182,15 @@ class DixonColes():
             weights = np.exp( -t_delta * decay )
 
         matchData = MatchData(
-            home_idx   = np.array([ self.idx[m.home] for m in matches ]),
-            away_idx   = np.array([ self.idx[m.away] for m in matches ]),
+            home_idx   = np.array([ idx[m.home] for m in matches ], dtype=int),
+            away_idx   = np.array([ idx[m.away] for m in matches ], dtype=int),
             home_goals = home_goals,
             away_goals = away_goals,
             weights    = weights,
             nMatches   = len(matches),
+            teams      = teams,
+            nTeams     = nTeams,
+            idx        = idx,
             m00 = (home_goals == 0) & (away_goals == 0),
             m01 = (home_goals == 0) & (away_goals == 1),
             m10 = (home_goals == 1) & (away_goals == 0),
@@ -159,7 +200,7 @@ class DixonColes():
 
 
     def fit(self, matchData, x0 = None):
-        n = len(self.teams)
+        n = matchData.nTeams
 
         if x0 is None:
             x0 = np.concatenate([np.zeros(2*n-1), [0.3], [0.0]])
@@ -177,8 +218,7 @@ class DixonColes():
         
         return result.x
 
-    def _unpack(self, v):
-        n = len(self.teams)
+    def _unpack(self, v, n):
         free_att = v[:n-1]
         attacks = np.append(free_att, -free_att.sum())
         defences = v[n-1 : 2*n-1]
@@ -187,7 +227,7 @@ class DixonColes():
         return (attacks, defences, homeAdv, lowScoreCorr)
 
     def _objective(self, v, matchData):
-        attacks, defences, homeAdv, lowScoreCorr = self._unpack(v)
+        attacks, defences, homeAdv, lowScoreCorr = self._unpack(v, matchData.nTeams)
         li, success = self.likelihood(attacks, defences, homeAdv, lowScoreCorr, matchData)
         return -li
 
