@@ -36,8 +36,11 @@ class DixonColes():
         self.lowScoreCorr = None
         self.timeDecay = None
 
+        self.fitted = False
+
         self.maxGoals = 10
         self.scorelineDist = None
+        
 
 
     def fit_from_matches(self, allMatches):
@@ -62,6 +65,25 @@ class DixonColes():
         self.idx = allMatchData.idx
 
         (self.attacks, self.defences, self.homeAdv, self.lowScoreCorr) = params
+
+        self.fitted = True
+        print("DC successfully fitted!")
+
+    def fit_from_params(self, team_strengths, params):
+        team_strengths = team_strengths.sort_index()
+         
+        self.teams = list(team_strengths.index)
+        self.idx = { t: i for i, t in enumerate(self.teams) }
+
+        self.attacks  = team_strengths["attacks"].to_numpy()
+        self.defences = team_strengths["defences"].to_numpy()
+
+        self.timeDecay    = params["timeDecay"]
+        self.homeAdv      = params["homeAdv"]
+        self.lowScoreCorr = params["lowScoreCorr"]
+
+        self.fitted = True
+        print("DC successfully fitted!")
 
 
     # Split matches into an ordered list of quarters: [s0q0, s0q1, s0q2, s0q3, s1q0, ...]
