@@ -27,9 +27,9 @@ class MatchData(NamedTuple):
     m11:        np.ndarray
 
 class DixonColes():
-    def __init__(self, teams):
-        self.teams = sorted(teams)
-        self.idx = {t: i for i,t in enumerate(self.teams)}
+    def __init__(self):
+        self.teams = None
+        self.idx = None
         self.attacks = None
         self.defences = None
         self.homeAdv = None
@@ -210,7 +210,8 @@ class DixonColes():
             self._objective,
             x0,
             args = (matchData,),
-            bounds = bounds
+            bounds = bounds,
+            options = {"maxfun": 500_000, "maxiter": 500_000}
         )
 
         if not result.success:

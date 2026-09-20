@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import requests
 
-BASE_URL = "https://www.fotmob.com/api"
+BASE_URL = "https://www.fotmob.com/api/data"
  
 # A browser-like User-Agent avoids some naive bot-blocking; still be a
 # considerate caller (see RATE_LIMIT_SECONDS below).
@@ -23,6 +23,7 @@ class Match(NamedTuple):
     home: str
     away: str
     score: tuple[int, int]
+    season: int
     ts: np.datetime64
 
 def get_league_matches(session: requests.Session, league_id: int, season: str) -> Optional[list[dict]]:
@@ -35,7 +36,7 @@ def get_league_matches(session: requests.Session, league_id: int, season: str) -
         season: Season string in FotMob's own format, e.g. "2023/2024".
  
     Returns:
-        Raw list of match dicts (data["matches"]["allMatches"]), or None on failure.
+        Raw list of match dicts (data["fixtures"]["allMatches"]), or None on failure.
     """
     try:
         resp = session.get(
@@ -46,22 +47,36 @@ def get_league_matches(session: requests.Session, league_id: int, season: str) -
         )
         resp.raise_for_status()
         data = resp.json()
-        return data["matches"]["allMatches"]
     except requests.RequestException as e:
         print(f"Failed fetching league {league_id} season {season}: {e}")
         return None
+
+    # The response shape changes without warning, so fail loudly rather than
+    # letting a KeyError escape as an unhandled crash.
+    try:
+        return data["fixtures"]["allMatches"]
+    except (KeyError, TypeError):
+        print(
+            f"Unexpected response shape for league {league_id} season {season}; "
+            f"top-level keys: {list(data)[:12]}"
+        )
+        return None
  
  
-def parse_matches(raw_matches: list[dict]) -> list[Match]:
+def parse_matches(raw_matches: list[dict], season: int) -> list[Match]:
     """Convert raw FotMob match dicts into the target Match NamedTuple.
  
     Only matches that have actually finished (and so have a real score) are
     kept -- fixtures that haven't been played yet have no scoreStr to parse.
+
+    Abandoned matches are marked finished but also cancelled, and carry the
+    score at the point of abandonment. They are replayed and listed again, so
+    keeping them would double-count the fixture with a bogus scoreline.
     """
     out = []
     for m in raw_matches:
         status = m.get("status", {})
-        if not status.get("finished"):
+        if not status.get("finished") or status.get("cancelled"):
             continue
  
         score_str = status.get("scoreStr")  # e.g. "2 - 1"
@@ -84,7 +99,10 @@ def parse_matches(raw_matches: list[dict]) -> list[Match]:
                 home=home_name,
                 away=away_name,
                 score=(home_goals, away_goals),
-                ts=np.datetime64(utc_time),
+                season=season,
+                # utcTime ends in "Z"; numpy has no timezone support and warns
+                # on a tz-qualified string, so strip it (times are already UTC).
+                ts=np.datetime64(utc_time.rstrip("Z")),
             )
         )
     return out
@@ -97,7 +115,7 @@ def get_league_matches_multi_season(league_id: int, seasons: list[str]) -> list[
         for season in seasons:
             raw = get_league_matches(session, league_id, season)
             if raw:
-                parsed = parse_matches(raw)
+                parsed = parse_matches(raw, season)
                 print(f"  {season}: {len(parsed)} finished matches")
                 all_matches.extend(parsed)
             time.sleep(RATE_LIMIT_SECONDS)
