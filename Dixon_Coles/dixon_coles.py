@@ -232,6 +232,8 @@ class DixonColes():
             self._objective,
             x0,
             args = (matchData,),
+            method="L-BFGS-B", 
+            jac=True,
             bounds = bounds,
             options = {"maxfun": 500_000, "maxiter": 500_000}
         )
@@ -251,37 +253,96 @@ class DixonColes():
 
     def _objective(self, v, matchData):
         attacks, defences, homeAdv, lowScoreCorr = self._unpack(v, matchData.nTeams)
-        li, success = self.likelihood(attacks, defences, homeAdv, lowScoreCorr, matchData)
-        return -li
+        li, success, g = self.likelihood(attacks, defences, homeAdv, lowScoreCorr, matchData, grad=True)
+        return -li, -g
 
-    def likelihood(self, attacks, defences, homeAdv, lowScoreCorr, md):
+    def likelihood(self, attacks, defences, homeAdv, lowScoreCorr, md, grad=False):
         homeAtts = attacks[md.home_idx]
         homeDefs = defences[md.home_idx]
         awayAtts = attacks[md.away_idx]
         awayDefs = defences[md.away_idx]
 
-        homeExpGoalsLog = homeAtts + awayDefs + homeAdv
-        awayExpGoalsLog = awayAtts + homeDefs
+        gamma = homeAdv
+        rho = lowScoreCorr
 
-        homeExpGoals = np.exp( homeExpGoalsLog )
-        awayExpGoals = np.exp( awayExpGoalsLog )
+        log_lam = homeAtts + awayDefs + gamma
+        log_mu  = awayAtts + homeDefs
 
-        DCCorrection = np.ones(md.nMatches)
-        DCCorrection[md.m00] = 1 - homeExpGoals[md.m00] * awayExpGoals[md.m00] * lowScoreCorr
-        DCCorrection[md.m01] = 1 + homeExpGoals[md.m01] * lowScoreCorr
-        DCCorrection[md.m10] = 1 + awayExpGoals[md.m10] * lowScoreCorr
-        DCCorrection[md.m11] = 1 - lowScoreCorr
+        lam = np.exp( log_lam ) # Home expected goals
+        mu  = np.exp( log_mu )  # Away expected goals
+
+        C = np.ones(md.nMatches) # Dixon-Coles correction 
+        C[md.m00] = 1 - lam[md.m00] * mu[md.m00] * rho
+        C[md.m01] = 1 + lam[md.m01] * rho
+        C[md.m10] = 1 + mu[md.m10] * rho
+        C[md.m11] = 1 - rho
 
         PEN_SCALAR = -100
         FLOOR = 1e-6
 
-        violation = np.clip(FLOOR - DCCorrection, 0.0, None)
-        success = not np.any(violation > 0)
-        DCCorrection = np.maximum(DCCorrection, FLOOR)
+        violating = FLOOR - C > 0
+        violation = np.where(violating, FLOOR - C, 0.0)
+        success = not violating.any()
+        C = np.maximum(C, FLOOR)
         penalty = PEN_SCALAR * violation.sum()
 
-        unweighted =  np.log(DCCorrection)  -homeExpGoals + md.home_goals * homeExpGoalsLog  -awayExpGoals + md.away_goals * awayExpGoalsLog
+        unweighted =  np.log(C)  -lam + md.home_goals * log_lam  -mu + md.away_goals * log_mu
         likelihood = np.dot( md.weights, unweighted ) + penalty
         
+        if not grad: 
+            return likelihood, success
 
-        return likelihood, success
+
+        #
+        # ANALYTIC GRADIENT CALCULATION
+        #
+
+        # Calculate differential of DC Correction Coeff
+        dC_dlogLam = np.zeros(md.nMatches)
+        dC_dlogMu  = np.zeros(md.nMatches)
+        dC_drho    = np.zeros(md.nMatches)
+
+        dC_dlogLam[md.m00] = -lam[md.m00] * mu[md.m00] * rho
+        dC_dlogMu[md.m00]  = -lam[md.m00] * mu[md.m00] * rho
+        dC_drho[md.m00]    = -lam[md.m00] * mu[md.m00]
+
+        dC_dlogLam[md.m01] = lam[md.m01] * rho
+        dC_drho[md.m01]    = lam[md.m01]
+
+        dC_dlogMu[md.m10]  = mu[md.m10] * rho
+        dC_drho[md.m10]    = mu[md.m10]
+
+        dC_drho[md.m11]    = -1.0
+
+
+
+        # Calculate match residuals
+        k = np.where(violating, -PEN_SCALAR, md.weights / C)
+        dH = md.weights * (md.home_goals - lam) + k * dC_dlogLam
+        dA = md.weights * (md.away_goals - mu)  + k * dC_dlogMu
+
+
+
+        # Calulate partial differentials of likelihood w.r.t. parameters
+        n = md.nTeams
+
+        # ∂L/∂α_k = Σ_{h(m)=k} D^H + Σ_{a(m)=k} D^A
+        g_att = (np.bincount(md.home_idx, weights=dH, minlength=n)
+            + np.bincount(md.away_idx, weights=dA, minlength=n))
+
+        # ∂L/∂β_k = Σ_{h(m)=k} D^A + Σ_{a(m)=k} D^H
+        g_def = (np.bincount(md.home_idx, weights=dA, minlength=n)
+            + np.bincount(md.away_idx, weights=dH, minlength=n))
+
+        # ∂L/∂γ = Σ_m D^H
+        g_gamma = dH.sum()
+
+        # ∂L/∂ρ = Σ_m (w/C) ∂C/∂ρ
+        g_rho = np.dot(k, dC_drho)
+
+
+
+        # Calculate grad of the objective function
+        # Last attack param is α_n = −∑_{j<n} α_j, so all ​α_j pick up an extra -∂L/∂α_n
+        grad = np.concatenate([g_att[:-1] - g_att[-1], g_def, [g_gamma], [g_rho]])
+        return likelihood, success, grad

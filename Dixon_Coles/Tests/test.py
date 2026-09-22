@@ -7,7 +7,7 @@ from TEST_DATA1 import get_test_data, TRUE_PARAMS
 
 teams, matches = get_test_data(seed=42,nSeasons=10)
 
-dc = DixonColes(teams)
+dc = DixonColes()
 dc.fit_from_matches(matches)
 
 print("True Attack         Estimated Attack")
