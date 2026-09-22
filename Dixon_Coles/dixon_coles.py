@@ -1,3 +1,35 @@
+"""Dixon-Coles goal model for football (soccer) match outcomes.
+
+Home and away goals are modelled as Poisson counts whose log rates are
+additive in team strength:
+
+    log lambda = attack[home] + defence[away] + homeAdv     (home goals)
+    log mu     = attack[away] + defence[home]               (away goals)
+
+Independent Poissons don't predict low-scoring games well; if the score is 0-0 or 1-1
+both teams will take more risks to get a lead, whereas if the score is 0-1 or 1-0 the
+leading team will play safe to hold onto their lead.
+
+Thus the likelihood of one side scoring 0 or 1 is dependent on the other team's score, 
+i.e. they are correlated. So Dixon and Coles (1997) apply a correction factor tau to the
+four scorelines at or below 1-1 with a correlation factor of rho. However the choice of
+limiting this correction to these four scorelines was an empirical decision.
+
+Notice that if a constant is added to all the attacks and taken away from all the 
+defences, the log rates do not change, thus trying to determine all of the parameters
+leaves a single degree of freedom (translating all the parameters). 
+
+To determine a single solution, we impose the constraint that attacks sum to zero. Thus,
+we must only attempt to find the first n-1 attacks, which is enough to determine the 
+nth.
+
+Matches are weighted by exponential time decay, with the decay rate chosen
+by expanding-window cross-validation rather than fixed a priori.
+
+Fitted models produce a scoreline probability grid, which prices any market
+whose settlement depends only on the final score.
+"""
+
 from typing import NamedTuple
 from scipy.optimize import minimize
 import numpy as np
@@ -7,7 +39,8 @@ from scipy.stats import poisson
 import warnings
 
 class UnknownTeamError(LookupError):
-    """Raised when a fixture involves a team absent from the fitted parameters.
+    """Raised when a fixture involves a team absent from the fitted 
+    parameters.
 
     Attributes:
         teams: The requested team names that are not in the fitted set.
@@ -59,6 +92,17 @@ class DixonColes():
 
 
     def fit_from_matches(self, allMatches):
+        """Select a time decay by cross-validation, then fit on all matches.
+
+        Args:
+            allMatches: Iterable of :class:`Match`. Teams are taken from the
+                matches themselves, so a team appearing in none of them will
+                be absent from the fitted model.
+
+        Raises:
+            Exception: If the optimiser fails to converge on the full data.
+        """
+
 
         quarters = self._split_by_quarters(allMatches)
         folds = self.create_test_train(quarters)
@@ -84,8 +128,10 @@ class DixonColes():
             + np.bincount(allMatchData.away_idx, minlength=allMatchData.nTeams)
         )
         self.teamWeights = (
-            np.bincount(allMatchData.home_idx, weights=allMatchData.weights, minlength=allMatchData.nTeams)
-            + np.bincount(allMatchData.away_idx, weights=allMatchData.weights, minlength=allMatchData.nTeams)
+            np.bincount(allMatchData.home_idx, weights=allMatchData.weights, 
+                        minlength=allMatchData.nTeams)
+            + np.bincount(allMatchData.away_idx, weights=allMatchData.weights, 
+                          minlength=allMatchData.nTeams)
         )
 
         (self.attacks, self.defences, self.homeAdv, self.lowScoreCorr) = params
@@ -94,6 +140,16 @@ class DixonColes():
         print("DC successfully fitted!")
 
     def fit_from_params(self, team_strengths, params):
+        """Load a previously fitted model instead of refitting.
+
+        Args:
+            team_strengths: DataFrame indexed by team name with columns
+                "attacks" and "defences". Sorted by index on load, so the
+                stored index ordering does not matter.
+            params: Mapping with keys "timeDecay", "homeAdv", "lowScoreCorr",
+                "teamCounts" and "teamWeights".
+        """
+                
         team_strengths = team_strengths.sort_index()
          
         self.teams = list(team_strengths.index)
@@ -122,7 +178,10 @@ class DixonColes():
             by_season[m.season].append(m)
 
         season_nums = sorted(by_season)
-        season_matches = [ sorted(by_season[s], key=lambda m: m.ts) for s in season_nums ]
+        season_matches = [ 
+            sorted(by_season[s], key=lambda m: m.ts) 
+            for s in season_nums
+            ]
 
         # cut each season into 4 blocks of (roughly) equal match count
         quarters = []
@@ -204,7 +263,7 @@ class DixonColes():
                 att[i_new] = attOld[i_old]
                 dfc[i_new] = defOld[i_old]
 
-        att -= att.mean()                      # re-impose sum-to-zero on the new team set
+        att -= att.mean() # re-impose sum-to-zero on the new team set
         return np.concatenate([att[:-1], dfc, [homeAdv], [lowScoreCorr]])
 
 
@@ -280,7 +339,8 @@ class DixonColes():
 
     def _objective(self, v, matchData):
         attacks, defences, homeAdv, lowScoreCorr = self._unpack(v, matchData.nTeams)
-        li, success, g = self.likelihood(attacks, defences, homeAdv, lowScoreCorr, matchData, grad=True)
+        li, success, g = self.likelihood(attacks, defences, homeAdv, lowScoreCorr, 
+                                         matchData, grad=True)
         return -li, -g
 
     def likelihood(self, attacks, defences, homeAdv, lowScoreCorr, md, grad=False):
@@ -313,7 +373,9 @@ class DixonColes():
         C = np.maximum(C, FLOOR)
         penalty = PEN_SCALAR * violation.sum()
 
-        unweighted =  np.log(C)  -lam + md.home_goals * log_lam  -mu + md.away_goals * log_mu
+        unweighted =  ( np.log(C)
+                        -lam + md.home_goals * log_lam
+                        -mu + md.away_goals * log_mu )
         likelihood = np.dot( md.weights, unweighted ) + penalty
         
         if not grad: 
@@ -376,11 +438,33 @@ class DixonColes():
 
 
     def unknown_teams(self, *teams):
+        """Return the given team names that have no fitted parameters.
+
+        Args:
+            *teams: Team names to check.
+
+        Returns:
+            Tuple of the names not present in the fitted set, empty if 
+            all are known.
+
+        Raises:
+            RuntimeError: If the model is not fitted.
+        """
+
         if not self.fitted:
             raise RuntimeError("Model is not fitted")
         return tuple(t for t in teams if t not in self.idx)
 
     def knows(self, *teams):
+        """True if every given team has fitted parameters.
+
+        Args:
+            *teams: Team names to check.
+
+        Raises:
+            RuntimeError: If the model is not fitted.
+        """
+        
         return not self.unknown_teams(*teams)
 
     def _rates(self, home, away):
@@ -402,6 +486,29 @@ class DixonColes():
 
 
     def scoreline_dist(self, home, away, maxGoals):
+        """Probability of every scoreline in a fixture.
+
+        Args:
+            home: Home team name.
+            away: Away team name.
+            maxGoals: Highest number of goals modelled for either side.
+
+        Returns:
+            Array of shape (maxGoals + 1, maxGoals + 1) indexed by
+            (home goals, away goals), non-negative and summing to one.
+            Scorelines above the cap are truncated and the remaining 
+            mass renormalised. This renormalisation does slightly 
+            inflate every modelled scoreline, however this is 
+            negligible for large maxGoals. When flattened row-major, 
+            this matches the state ordering used by the arbitrage
+            detector's payoff matrix. Therefore it is crucial both use 
+            the same maxGoals.
+
+        Raises:
+            UnknownTeamError: If either team has no fitted parameters.
+            RuntimeError: If the model is not fitted.
+        """
+
         lam, mu = self._rates(home, away)
         g = np.arange(maxGoals + 1)
         P = np.outer( poisson.pmf(g, lam), poisson.pmf(g, mu) )
@@ -410,7 +517,8 @@ class DixonColes():
         tau = np.array([[t00, t01] , [t10, t11]])
 
         if tau.min() <= 0:
-            warnings.warn(f"Invalid DC correction for {home} v {away}: tau={tau.tolist()}. Clipping...", RuntimeWarning)
+            warnings.warn(f"Invalid DC correction for {home} v {away}: " +
+                          f"tau={tau.tolist()}. Clipping...", RuntimeWarning)
             tau = np.clip(tau, 10e-3, 10e3)
         
         P[:2, :2] *= tau
@@ -418,9 +526,33 @@ class DixonColes():
         return P / P.sum()
 
     def price_market(self, predicate, dist=None, distData = None):
+        """Price a market as its probability of settling as a win.
+
+        Intended for one-off pricing. Pricing many markets on one 
+        fixture can be calculated faster by building the distribution
+        once and dotting it against a cached payoff matrix.
+
+        Args:
+            predicate: Callable taking (home goals, away goals) as 
+                scalars and returning a truth value when the market 
+                settles as a win.
+            dist: A scoreline distribution from :meth:`scoreline_dist`.
+            distData: Tuple of (home, away, maxGoals) to build one 
+                instead. Exactly one of dist and distData must be given.
+
+        Returns:
+            Dict with keys "dist" (the distribution used) and "price" 
+            (the probability of settlement, in [0, 1]).
+
+        Raises:
+            RuntimeError: If both or neither of dist and distData are 
+                given.
+        """
+
         given = sum((dist is not None, distData is not None))
         if given != 1:
-            raise RuntimeError("Please provide exactly one of distribution or distribution data")
+            raise RuntimeError("Please provide exactly one of distribution or " +
+            "distribution data")
 
         if distData is not None:
             (home, away, maxGoals) = distData
@@ -443,6 +575,25 @@ class DixonColes():
         return marketPrice 
 
     def match_count(self, team, weighted=False):
+        """Matches contributing to a team's fitted parameters.
+
+        A low count means the team's attack and defence rest on little
+        evidence. A caller using this module must decide on the 
+        threshold for this.
+
+        Args:
+            team: Team name.
+            weighted: If True, return the decay-weighted effective 
+                count, which discounts matches far in the past. If 
+                False, the raw number of matches.
+
+        Returns:
+            The count, or None if the fitted model carries no counts.
+
+        Raises:
+            UnknownTeamError: If the team has no fitted parameters.
+            RuntimeError: If the model is not fitted.
+        """
         if not self.knows(team):
             raise UnknownTeamError((team,))
         counts = self.teamWeights if weighted else self.teamCounts
