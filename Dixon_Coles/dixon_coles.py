@@ -3,6 +3,21 @@ from scipy.optimize import minimize
 import numpy as np
 from collections import defaultdict
 from itertools import chain
+from scipy.stats import poisson
+import warnings
+
+class UnknownTeamError(LookupError):
+    """Raised when a fixture involves a team absent from the fitted parameters.
+
+    Attributes:
+        teams: The requested team names that are not in the fitted set.
+    """
+
+    def __init__(self, teams):
+        self.teams = tuple(teams)
+        super().__init__(
+            f"not in the fitted team set: {', '.join(map(repr, self.teams))}"
+        )
 
 class Match(NamedTuple):
     home: str
@@ -36,10 +51,10 @@ class DixonColes():
         self.lowScoreCorr = None
         self.timeDecay = None
 
-        self.fitted = False
+        self.teamCounts = None
+        self.teamWeights = None
 
-        self.maxGoals = 10
-        self.scorelineDist = None
+        self.fitted = False
         
 
 
@@ -64,6 +79,15 @@ class DixonColes():
         self.teams = allMatchData.teams
         self.idx = allMatchData.idx
 
+        self.teamCounts = (
+            np.bincount(allMatchData.home_idx, minlength=allMatchData.nTeams)
+            + np.bincount(allMatchData.away_idx, minlength=allMatchData.nTeams)
+        )
+        self.teamWeights = (
+            np.bincount(allMatchData.home_idx, weights=allMatchData.weights, minlength=allMatchData.nTeams)
+            + np.bincount(allMatchData.away_idx, weights=allMatchData.weights, minlength=allMatchData.nTeams)
+        )
+
         (self.attacks, self.defences, self.homeAdv, self.lowScoreCorr) = params
 
         self.fitted = True
@@ -81,6 +105,9 @@ class DixonColes():
         self.timeDecay    = params["timeDecay"]
         self.homeAdv      = params["homeAdv"]
         self.lowScoreCorr = params["lowScoreCorr"]
+  
+        self.teamCounts   = params["teamCounts"]
+        self.teamWeights  = params["teamWeights"]
 
         self.fitted = True
         print("DC successfully fitted!")
@@ -135,7 +162,7 @@ class DixonColes():
 
                 #Train
                 trainMatchData = self._build_match_data(train, ref_ts, decay)
-                if not x0 is None:
+                if x0 is not None:
                     x0 = self._remap(x0, oldMD, trainMatchData)
                 xRes = self.fit(trainMatchData, x0)
 
@@ -346,3 +373,79 @@ class DixonColes():
         # Last attack param is α_n = −∑_{j<n} α_j, so all ​α_j pick up an extra -∂L/∂α_n
         grad = np.concatenate([g_att[:-1] - g_att[-1], g_def, [g_gamma], [g_rho]])
         return likelihood, success, grad
+
+
+    def unknown_teams(self, *teams):
+        if not self.fitted:
+            raise RuntimeError("Model is not fitted")
+        return tuple(t for t in teams if t not in self.idx)
+
+    def knows(self, *teams):
+        return not self.unknown_teams(*teams)
+
+    def _rates(self, home, away):
+        if not self.fitted:
+            raise RuntimeError("Model is not fitted")
+
+        missing = self.unknown_teams(home, away)
+        if missing:
+            raise UnknownTeamError(missing)
+        
+        h, a = self.idx[home], self.idx[away]
+        lam = np.exp(self.attacks[h] + self.defences[a] + self.homeAdv)
+        mu = np.exp(self.attacks[a] + self.defences[h])
+        return lam, mu
+
+    @staticmethod
+    def _tau_terms(lam, mu, rho):
+        return (1 - lam*mu*rho, 1 + lam*rho, 1 + mu*rho, 1 - rho)
+
+
+    def scoreline_dist(self, home, away, maxGoals):
+        lam, mu = self._rates(home, away)
+        g = np.arange(maxGoals + 1)
+        P = np.outer( poisson.pmf(g, lam), poisson.pmf(g, mu) )
+
+        t00, t01, t10, t11 = self._tau_terms(lam, mu, self.lowScoreCorr)
+        tau = np.array([[t00, t01] , [t10, t11]])
+
+        if tau.min() <= 0:
+            warnings.warn(f"Invalid DC correction for {home} v {away}: tau={tau.tolist()}. Clipping...", RuntimeWarning)
+            tau = np.clip(tau, 10e-3, 10e3)
+        
+        P[:2, :2] *= tau
+
+        return P / P.sum()
+
+    def price_market(self, predicate, dist=None, distData = None):
+        given = sum((dist is not None, distData is not None))
+        if given != 1:
+            raise RuntimeError("Please provide exactly one of distribution or distribution data")
+
+        if distData is not None:
+            (home, away, maxGoals) = distData
+            dist = self.scoreline_dist(home, away, maxGoals)
+
+        maxGoals = len(dist) - 1
+        
+        payouts = np.array([
+            int(predicate(h,a)) 
+            for h in range(maxGoals + 1) 
+            for a in range(maxGoals + 1)
+        ])
+        price = dist.ravel() @ payouts
+
+        marketPrice = {
+            "dist": dist,
+            "price": price
+        }
+
+        return marketPrice 
+
+    def match_count(self, team, weighted=False):
+        if not self.knows(team):
+            raise UnknownTeamError((team,))
+        counts = self.teamWeights if weighted else self.teamCounts
+        if counts is None:
+            return None
+        return counts[self.idx[team]]
