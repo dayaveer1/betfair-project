@@ -88,27 +88,31 @@ class DixonColes():
         self.teamWeights = None
 
         self.fitted = False
+
+        self.output = False
+        
         
 
-
-    def fit_from_matches(self, allMatches):
+    def fit_from_matches(self, allMatches, timeDecay=None):
         """Select a time decay by cross-validation, then fit on all matches.
 
         Args:
             allMatches: Iterable of :class:`Match`. Teams are taken from the
                 matches themselves, so a team appearing in none of them will
                 be absent from the fitted model.
+            timeDecay: Skip cross-validation and use this value.
 
         Raises:
             Exception: If the optimiser fails to converge on the full data.
         """
 
-
-        quarters = self._split_by_quarters(allMatches)
-        folds = self.create_test_train(quarters)
-
-        timeDecays = np.linspace(0.000, 0.01, 11)
-        self.timeDecay = self.select_decay(timeDecays, folds)
+        if timeDecay is not None:
+            self.timeDecay = timeDecay
+        else:
+            quarters = self._split_by_quarters(allMatches)
+            folds = self.create_test_train(quarters)
+            timeDecays = np.linspace(0.000, 0.01, 11)
+            self.timeDecay = self.select_decay(timeDecays, folds)
                 
         max_ts = max(m.ts for m in allMatches)
         allMatchData = self._build_match_data(allMatches, max_ts, self.timeDecay)
@@ -137,7 +141,7 @@ class DixonColes():
         (self.attacks, self.defences, self.homeAdv, self.lowScoreCorr) = params
 
         self.fitted = True
-        print("DC successfully fitted!")
+        if self.output: print("DC successfully fitted!")
 
     def fit_from_params(self, team_strengths, params):
         """Load a previously fitted model instead of refitting.
@@ -166,7 +170,7 @@ class DixonColes():
         self.teamWeights  = params["teamWeights"]
 
         self.fitted = True
-        print("DC successfully fitted!")
+        if self.output: print("DC successfully fitted!")
 
 
     # Split matches into an ordered list of quarters: [s0q0, s0q1, s0q2, s0q3, s1q0, ...]

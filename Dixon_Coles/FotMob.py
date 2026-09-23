@@ -1,5 +1,6 @@
 import time
 from typing import NamedTuple, Optional
+from itertools import chain
  
 import numpy as np
 import pandas as pd
@@ -107,18 +108,24 @@ def parse_matches(raw_matches: list[dict], season: int) -> list[Match]:
         )
     return out
  
- 
-def get_league_matches_multi_season(league_id: int, seasons: list[str]) -> list[Match]:
-    """Fetch and parse several seasons of one league, e.g. the last 2-3 years."""
-    all_matches: list[Match] = []
+def get_league_matches_multi_season(league_id: int, seasons: list[str], 
+                                    season_split: bool = False) -> list[Match] | list[list[Match]]:
+    """Fetch and parse several seasons of one league, e.g. the last 2-3 years.
+    Either return all the matches, or an array of season matches.
+    """
+    all_matches: list[Match] | list[list[Match]] = []
     with requests.Session() as session:
         for season in seasons:
             raw = get_league_matches(session, league_id, season)
             if raw:
                 parsed = parse_matches(raw, season)
                 print(f"  {season}: {len(parsed)} finished matches")
-                all_matches.extend(parsed)
+                all_matches.append(parsed)
             time.sleep(RATE_LIMIT_SECONDS)
+
+    if not season_split:
+        all_matches = list(chain.from_iterable(all_matches))
+
     return all_matches
  
  
