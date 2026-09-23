@@ -2,8 +2,8 @@ import numpy as np
 from itertools import chain
 from tqdm import tqdm
 
-from dixon_coles import DixonColes, UnknownTeamError
-from FotMob import get_league_matches_multi_season
+from Dixon_Coles.dixon_coles import DixonColes, UnknownTeamError
+from data_sources.FotMob import get_league_matches_multi_season
 
 LEAGUE_ID = 47
 SEASONS = ["2014/2015", "2015/2016", "2016/2017", "2017/2018", "2018/2019", "2019/2020", "2020/2021", "2021/2022", "2022/2023", "2023/2024", "2024/2025", "2025/2026"]

@@ -1,10 +1,12 @@
 import time
-from typing import NamedTuple, Optional
+from typing import Optional
 from itertools import chain
  
 import numpy as np
 import pandas as pd
 import requests
+
+from core.types import Match
 
 BASE_URL = "https://www.fotmob.com/api/data"
  
@@ -18,14 +20,6 @@ HEADERS = {
 }
  
 RATE_LIMIT_SECONDS = 1.5  # pause between requests to be a polite, low-frequency caller
- 
-
-class Match(NamedTuple):
-    home: str
-    away: str
-    score: tuple[int, int]
-    season: int
-    ts: np.datetime64
 
 def get_league_matches(session: requests.Session, league_id: int, season: str) -> Optional[list[dict]]:
     """Fetch the raw match list for one league/season from the FotMob API.

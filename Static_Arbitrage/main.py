@@ -1,4 +1,5 @@
-from arbitragedetector import ArbDetect, Quote
+from Static_Arbitrage.arbitragedetector import ArbDetect
+from core.types import Quote
 
 # Catalogue of supported markets as (name, settlement predicate) pairs, where the
 # predicate receives (home goals, away goals). "cash" lets the LP hold or fund 

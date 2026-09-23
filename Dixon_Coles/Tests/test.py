@@ -1,9 +1,5 @@
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-from dixon_coles import DixonColes
-from TEST_DATA1 import get_test_data, TRUE_PARAMS
+from Dixon_Coles.dixon_coles import DixonColes
+from Dixon_Coles.Tests.TEST_DATA1 import get_test_data, TRUE_PARAMS
 
 teams, matches = get_test_data(seed=42,nSeasons=10)
 

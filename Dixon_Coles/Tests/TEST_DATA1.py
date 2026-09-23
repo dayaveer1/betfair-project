@@ -1,11 +1,6 @@
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-from typing import NamedTuple
 import numpy as np
 from scipy.stats import poisson
-from dixon_coles import Match
+from core.types import Match
 
 TRUE_PARAMS = {
     "homeAdv": 0.30,

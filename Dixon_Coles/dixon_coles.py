@@ -30,13 +30,13 @@ Fitted models produce a scoreline probability grid, which prices any market
 whose settlement depends only on the final score.
 """
 
-from typing import NamedTuple
 from scipy.optimize import minimize
 import numpy as np
 from collections import defaultdict
 from itertools import chain
 from scipy.stats import poisson
 import warnings
+from typing import NamedTuple
 
 class UnknownTeamError(LookupError):
     """Raised when a fixture involves a team absent from the fitted 
@@ -51,13 +51,6 @@ class UnknownTeamError(LookupError):
         super().__init__(
             f"not in the fitted team set: {', '.join(map(repr, self.teams))}"
         )
-
-class Match(NamedTuple):
-    home: str
-    away: str
-    score: tuple[int, int]
-    season: int
-    ts: np.datetime64
 
 class MatchData(NamedTuple):
     home_idx:   np.ndarray

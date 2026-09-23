@@ -12,6 +12,7 @@ strictly positive. This creates a risk-less profit.
 import numpy as np
 from scipy.optimize import linprog
 from typing import NamedTuple
+from core.types import Quote
 
 class ArbResult(NamedTuple):
     """Outcome of an arbitrage search.
@@ -28,19 +29,6 @@ class ArbResult(NamedTuple):
     portfolio: dict | None
     cash_flow: float | None
     payoff: np.ndarray | None
-
-class Quote(NamedTuple):
-    """A two-sided quote on a single market.
-
-    Attributes:
-        bid: Price received when selling one unit of the security.
-        ask: Price paid when buying one unit of the security.
-    """
-
-    bid: float
-    ask: float
-    bidSize: float = 1.00
-    askSize: float = 1.00
 
 class ArbDetect:
     """Builds a state-space of scorelines and searches it for static arbitrage.
